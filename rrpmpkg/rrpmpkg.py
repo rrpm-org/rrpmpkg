@@ -8,6 +8,8 @@ import requests
 from rich.console import Console
 import typer
 
+from . import __version__
+
 cli = typer.Typer()
 console = Console()
 
@@ -16,7 +18,13 @@ GITHUB_REGEX = re.compile(r"^(https://|http://)?github.com/([a-zA-Z0-9_-]+)/([a-
 
 
 @cli.command()
-def install(package: str, install_deps: bool = True, ):
+def version():
+    """Show RRPM's currently installed version"""
+    console.print(f"[green]RRPM Version {__version__}[/]")
+
+
+@cli.command()
+def install(package: str, install_deps: bool = True):
     """Install an extension"""
     if shutil.which("git") is None:
         console.print("Git is not installed")
@@ -38,37 +46,191 @@ def install(package: str, install_deps: bool = True, ):
         return
 
     console.print(f"[green]Installing '{package}' extension[/]")
-    temp_dir = os.path.expandvars(f"%TEMP%\\{url.split('/')[-1]}") if platform.system().lower().startswith("win") else f"/tmp/{url.split('/')[-1]}"
-    if not os.path.exists(temp_dir):
-        os.mkdir(temp_dir)
-    out = subprocess.run(["git", "clone", url, temp_dir], capture_output=True)
-    if str(out.stdout).startswith("fatal: destintion path"):
-        shutil.rmtree(temp_dir)
-        subprocess.run(["git", "clone", url, temp_dir])
-    else:
-        console.print(out.stdout.decode("utf-8"))
-    os.chdir(temp_dir)
-    if install_deps:
-        console.print("[green]Installing dependencies[/]")
-        subprocess.run(["pip", "install", "-r", "requirements.txt"])
-    console.print("[green]Installing extension[/]")
-    for file in os.listdir(temp_dir):
-        if os.path.isfile(file) and file.endswith(".py"):
-            if platform.system().lower().startswith("win"):
-                shutil.copy(temp_dir, os.path.expandvars(f"%LOCALAPPDATA%\\rrpm\\extensions\\{file}"))
-            else:
-                shutil.copy(temp_dir,
-                            os.path.expanduser(f"~/.config/rrpm/extensions/{file}"))
+    ext_dir = os.path.expanduser(
+        os.path.expandvars("%LOCALAPPDATA%\\rrpm\\extensions")) if platform.system().lower().startswith(
+        "win") else os.path.expanduser(os.path.expandvars("~/.config/rrpm/extensions"))
+    try:
+        out = subprocess.run([shutil.which("git"), "clone", url, os.path.join(ext_dir, url.split("/")[-1])], capture_output=True)
+        if out.stdout.decode("utf-8").startswith("fatal: destination path"):
+            console.print("[red]Extension already exists[/]")
         else:
-            if os.path.isdir(file):
-                if not file.startswith("."):
-                    if platform.system().lower().startswith("win"):
-                        shutil.copytree(temp_dir,
-                                        os.path.expandvars(f"%LOCALAPPDATA%\\rrpm"
-                                                           f"\\extensions\\{file}"))
-                    else:
-                        shutil.copytree(temp_dir,
-                                        os.path.expanduser(f"~/.config/rrpm/extensions/{file}"))
+            console.print(out.stdout.decode("utf-8"))
+    except FileNotFoundError:
+        out = subprocess.run([shutil.which("git"), "clone", url, os.path.join(ext_dir, url.split("/")[-1])], capture_output=True, shell=True)
+        if out.stdout.decode("utf-8").startswith("fatal: destination path"):
+            console.print("[red]Extension already exists[/]")
+        else:
+            console.print(out.stdout.decode("utf-8"))
+
+    if os.path.exists(
+            os.path.join(
+                ext_dir,
+                url.split("/")[-1]
+            )
+    ) and install_deps:
+        if os.path.exists(
+                os.path.join(
+                    ext_dir,
+                    url.split("/")[-1],
+                    "requirements.txt"
+                )
+        ):
+            try:
+                subprocess.run(
+                    [
+                        shutil.which("pip"),
+                        "install",
+                        "-r",
+                        os.path.join(
+                            ext_dir,
+                            url.split("/")[-1],
+                            "requirements.txt"
+                        )
+                    ]
+                )
+            except FileNotFoundError:
+                subprocess.run(
+                    [
+                        shutil.which("pip"),
+                        "install",
+                        "-r",
+                        os.path.join(
+                            ext_dir,
+                            url.split("/")[-1],
+                            "requirements.txt"
+                        )
+                    ],
+                    shell=True
+                )
+        else:
+            console.print("WARNING: Failed to install dependencies! No requirements.txt file present!")
+
+
+@cli.command()
+def uninstall(package: str):
+    """Uninstall an extension"""
+    console.print(f"[green]Uninstalling '{package}' extension[/]")
+    ext_dir = os.path.expanduser(
+        os.path.expandvars("%LOCALAPPDATA%\\rrpm\\extensions")) if platform.system().lower().startswith(
+        "win") else os.path.expanduser(os.path.expandvars("~/.config/rrpm/extensions"))
+    try:
+        shutil.rmtree(os.path.join(ext_dir, package.split("/")[-1]))
+    except FileNotFoundError:
+        console.print("[red]Extension is not installed![/]")
+    except PermissionError as e:
+        console.print(f"[red]Failed to uninstall extension! Permission denied to file: {':'.join(str(e).split(':')[1:]).lstrip().rstrip()}[/]")
+    except Exception as e:
+        console.print("[red]Failed to uninstall extension! Exception occured: {e}")
+
+
+@cli.command()
+def update(package: str = None, reinstall_deps: bool = False):
+    """Update an Extension"""
+    if shutil.which("git") is None:
+        console.print("Git is not installed")
+        return
+
+    ext_dir = os.path.expanduser(
+        os.path.expandvars("%LOCALAPPDATA%\\rrpm\\extensions")) if platform.system().lower().startswith(
+        "win") else os.path.expanduser(os.path.expandvars("~/.config/rrpm/extensions"))
+
+    if package is None:
+        if not os.listdir(ext_dir):
+            console.print("[yellow]No extensions are installed![/]")
+            return
+        for fold in os.listdir(ext_dir):
+            os.chdir(os.path.join(ext_dir, fold))
+            try:
+                subprocess.run([shutil.which("git"), "pull"])
+            except FileNotFoundError:
+                subprocess.run([shutil.which("git"), "pull"], shell=True)
+
+            if reinstall_deps:
+                if os.path.exists(
+                        os.path.join(
+                            ext_dir,
+                            fold,
+                            "requirements.txt"
+                        )
+                ):
+                    try:
+                        subprocess.run(
+                            [
+                                shutil.which("pip"),
+                                "install",
+                                "-r",
+                                os.path.join(
+                                    ext_dir,
+                                    fold,
+                                    "requirements.txt"
+                                )
+                            ]
+                        )
+                    except FileNotFoundError:
+                        subprocess.run(
+                            [
+                                shutil.which("pip"),
+                                "install",
+                                "-r",
+                                os.path.join(
+                                    ext_dir,
+                                    fold,
+                                    "requirements.txt"
+                                )
+                            ],
+                            shell=True
+                        )
+                else:
+                    console.print(
+                        f"WARNING: Failed to install dependencies for '{fold}'! No requirements.txt file present!")
+    else:
+        try:
+            os.chdir(os.path.join(ext_dir, package))
+        except FileNotFoundError:
+            console.print("[red]Extension is not installed[/]")
+            return
+        try:
+            subprocess.run([shutil.which("git"), "pull"])
+        except FileNotFoundError:
+            subprocess.run([shutil.which("git"), "pull"], shell=True)
+        if reinstall_deps:
+            if os.path.exists(
+                    os.path.join(
+                        ext_dir,
+                        package,
+                        "requirements.txt"
+                    )
+            ):
+                try:
+                    subprocess.run(
+                        [
+                            shutil.which("pip"),
+                            "install",
+                            "-r",
+                            os.path.join(
+                                ext_dir,
+                                package,
+                                "requirements.txt"
+                            )
+                        ]
+                    )
+                except FileNotFoundError:
+                    subprocess.run(
+                        [
+                            shutil.which("pip"),
+                            "install",
+                            "-r",
+                            os.path.join(
+                                ext_dir,
+                                package,
+                                "requirements.txt"
+                            )
+                        ],
+                        shell=True
+                    )
+            else:
+                console.print(
+                    f"WARNING: Failed to install dependencies for '{package}'! No requirements.txt file present!")
 
 
 if __name__ == "__main__":
